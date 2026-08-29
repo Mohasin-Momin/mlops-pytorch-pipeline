@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # CPU-only torch wheels keep the CI install small - GPU wheels aren't
+      # needed to import the code or run the shape tests.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/serve.txt -r requirements/dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Unit tests
+        run: pytest tests/ -v
+
+  docker-build-and-smoke-test:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build serving image
+        run: docker build -f docker/Dockerfile.serve -t mlops-serve:ci .
+
+      # No checkpoint volume is mounted, so the container comes up with the
+      # model unloaded - /health returns 503 but the process stays up. This
+      # just proves the image builds and the app starts.
+      - name: Run container and check it starts
+        run: |
+          docker run -d --name mlops-serve-ci -p 8080:8080 mlops-serve:ci
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health || true)
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              echo "app is up (HTTP $code)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "app never responded"
+          docker logs mlops-serve-ci
+          exit 1
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f mlops-serve-ci || true

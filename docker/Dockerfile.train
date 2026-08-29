@@ -1,0 +1,21 @@
+# Training image - multi-stage so the dependency layer is cached separately
+# from the source, and only rebuilt when requirements/train.txt changes.
+#
+# Data (/app/data) and checkpoints (/app/checkpoints) are mounted at run time
+# (Docker volumes locally, PVCs on Kubernetes), not baked in. The config is
+# read from TRAINING_CONFIG, defaulting to the mounted ConfigMap path.
+
+# Stage 1: install dependencies
+FROM python:3.11-slim AS base
+WORKDIR /app
+COPY requirements/train.txt .
+RUN pip install --no-cache-dir -r train.txt
+
+# Stage 2: training runtime
+FROM base AS training
+COPY src/ ./src/
+COPY configs/ ./configs/
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    TRAINING_CONFIG=/app/configs/training_config.yaml
+ENTRYPOINT ["python", "src/train.py"]
