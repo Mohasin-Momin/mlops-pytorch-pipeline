@@ -110,11 +110,12 @@ HEALTHCHECK. The checkpoint is mounted, not baked in.
 
 ## Kubernetes
 
-Load the locally built images into the cluster (minikube shown):
+Load the locally built images into the cluster (kind shown; `minikube image load` for minikube):
 
 ```bash
-minikube image load mlops-train:v1
-minikube image load mlops-serve:v1
+kind create cluster --name mlops
+kind load docker-image mlops-train:v1 --name mlops
+kind load docker-image mlops-serve:v1 --name mlops
 ```
 
 Run training as a Job:

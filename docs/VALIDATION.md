@@ -34,43 +34,87 @@ docker rm -f mlops-serve
 
 ## 2. Kubernetes
 
-```bash
-minikube image load mlops-train:v1
-minikube image load mlops-serve:v1
+Local cluster with kind (single node, reuses the WSL Docker engine):
 
+```bash
+kind create cluster --name mlops
+kind load docker-image mlops-train:v1 --name mlops
+kind load docker-image mlops-serve:v1 --name mlops
+
+# metrics-server so the HPA can read CPU (kind needs --kubelet-insecure-tls)
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch -n kube-system deployment metrics-server --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+```
+
+Run training as a Job:
+
+```bash
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/configmap.yaml
 kubectl apply -f k8s/training-job.yaml
+kubectl get pods -n ml-training -w
 kubectl logs -f job/train-classifier -n ml-training
-kubectl wait --for=condition=complete job/train-classifier -n ml-training --timeout=1800s
+# let it finish, or stop once a checkpoint is written to the PVC:
+#   kubectl delete job train-classifier -n ml-training
+```
 
+Deploy serving:
+
+```bash
 kubectl apply -f k8s/serving-deployment.yaml
 kubectl apply -f k8s/serving-service.yaml
 kubectl apply -f k8s/hpa.yaml
+kubectl rollout status deployment/model-serving -n ml-training
 
-kubectl get pods -n ml-training
+kubectl get pods,deploy,svc,hpa,pvc -n ml-training
 kubectl describe deployment model-serving -n ml-training
 
 kubectl port-forward svc/model-serving 8000:80 -n ml-training
+curl http://localhost:8000/health
 curl -X POST http://localhost:8000/predict -F "image=@test_image.png"
 ```
 
-## Reflection (300-500 words)
+On a cloud cluster with GPU nodes, apply `k8s/training-job-gpu.yaml` instead of
+`k8s/training-job.yaml` (see README).
+
+## Reflection
 
 _What was the most challenging part?_
 
-Draft notes to expand before submission:
+The model code was the easy part. The friction was all in the boundaries between
+environments - local shell, Docker, and Kubernetes - where the same script has to
+behave the same way with different filesystems, ports, and process lifecycles.
 
-- Keeping the training and serving images small and separate. The training image
-  needs torchvision datasets and augmentation; the serving image only needs
-  inference plus the web framework. Splitting the requirements files and using a
-  slim base with a non-root user kept the serving image lean.
-- Path and import handling across three run contexts (local, Docker, Kubernetes).
-  The config path is resolved in a fixed order and `PYTHONPATH=/app/src` is set
-  in the images so the flat `import model` / `import dataset` works everywhere.
-- Storage wiring on Kubernetes. The Job writes the checkpoint to a PVC and the
-  serving Deployment mounts the same PVC read-only, so the two workloads share
-  the artifact without a registry or object store.
-- Probes and rolling updates. Readiness needs an initial delay because model load
-  takes a few seconds; `maxUnavailable: 0` keeps at least two pods serving during
-  an update.
+The single most useful design decision was making the two images separate rather
+than one image with a mode flag. Training needs torchvision's dataset and
+augmentation machinery; serving only needs inference plus the web framework. Split
+requirements files, a slim base, and a non-root user keep the serving image small
+and give it a smaller attack surface, which is the point of a serving container.
+
+Getting the model artifact from the training workload to the serving workload was
+the part that most changed how I think about this. Locally it is just a bind mount.
+On Kubernetes the Job writes `classifier_v1.pt` to a PersistentVolumeClaim and the
+Deployment mounts the same PVC read-only. That means no model registry or object
+store is needed for a single-cluster setup, but it also means the serving pods are
+useless until the Job has produced at least one checkpoint - so `serve.py` had to
+treat "no checkpoint yet" as a normal 503 state instead of crashing. That one
+choice is what makes the readiness probe and the CI smoke test behave sensibly
+before any training has happened.
+
+Smaller things that cost real time: `docker run -v $(pwd)/...` silently splitting
+on the space in the repo path; host port 8080 being held by a Windows service, so
+every local and port-forward example had to move to 8000 while the container kept
+`EXPOSE 8080` as the spec requires; the training loop only logging per-epoch, which
+made early runs look hung until I checked `docker stats`; and the Job's
+`requests: cpu 2 / memory 4Gi` not fitting a default local cluster node until it
+was given more resources. None of these are hard once identified, but each is the
+kind of thing that only shows up when you actually run the full path end to end,
+which is the main lesson: the pipeline is only "done" when every stage has been
+executed against the real runtime, not just the code reviewed.
+
+<!-- fill in from the actual runs before submitting -->
+- Docker training: reached epoch N, val_accuracy ~0.XX, checkpoint saved.
+- Docker serving: /health 200, /predict returned "<class>".
+- Kubernetes: Job completed / stopped after checkpoint; serving Deployment 2/2 ready;
+  /predict via port-forward returned "<class>".
