@@ -80,17 +80,28 @@ PYTHONPATH=src pytest -q
 ## Docker
 
 ```bash
+mkdir -p data checkpoints
+
 # Training
 docker build -f docker/Dockerfile.train -t mlops-train:v1 .
-docker run --rm -v $(pwd)/data:/app/data -v $(pwd)/checkpoints:/app/checkpoints mlops-train:v1
+docker run --rm \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/checkpoints:/app/checkpoints" \
+  mlops-train:v1
 
 # Serving
 docker build -f docker/Dockerfile.serve -t mlops-serve:v1 .
-docker run --rm -p 8080:8080 -v $(pwd)/checkpoints:/app/checkpoints mlops-serve:v1
+docker run -d --name mlops-serve -p 8080:8080 \
+  -v "$(pwd)/checkpoints:/app/checkpoints" \
+  mlops-serve:v1
 
 curl http://localhost:8080/health
 curl -X POST http://localhost:8080/predict -F "image=@test_image.png"
+docker rm -f mlops-serve
 ```
+
+Quote the `-v` mounts: `$(pwd)` breaks on paths containing spaces otherwise. `/health`
+returns 200 only once a checkpoint exists under `checkpoints/`, so run training first.
 
 The training and serving images have separate pinned requirements. The serving image uses a
 slim base, installs inference deps only, runs as a non-root user, exposes 8080 and has a

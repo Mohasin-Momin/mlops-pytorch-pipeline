@@ -4,15 +4,30 @@ Paste terminal output / screenshots for each step into the final PR description.
 
 ## 1. Local Docker
 
+Quote the `-v` mounts - `$(pwd)` here is under a path with spaces.
+
 ```bash
+mkdir -p data checkpoints
+
 docker build -f docker/Dockerfile.train -t mlops-train:v1 .
-docker run --rm -v $(pwd)/data:/app/data -v $(pwd)/checkpoints:/app/checkpoints mlops-train:v1
+docker run --rm \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/checkpoints:/app/checkpoints" \
+  mlops-train:v1
 
 docker build -f docker/Dockerfile.serve -t mlops-serve:v1 .
-docker run --rm -p 8080:8080 -v $(pwd)/checkpoints:/app/checkpoints mlops-serve:v1
+docker run -d --name mlops-serve -p 8080:8080 \
+  -v "$(pwd)/checkpoints:/app/checkpoints" \
+  mlops-serve:v1
 
+# a sample image to POST
+python -c "from torchvision import datasets; datasets.CIFAR10('data', download=True)[1][0].save('test_image.png')"
+
+sleep 8
 curl http://localhost:8080/health
 curl -X POST http://localhost:8080/predict -F "image=@test_image.png"
+docker logs mlops-serve
+docker rm -f mlops-serve
 ```
 
 ## 2. Kubernetes
