@@ -1,0 +1,61 @@
+# GPU variant of the training Job (Part D bonus). Same as training-job.yaml
+# but requests one NVIDIA GPU and only schedules onto GPU nodes.
+#
+# Apply this INSTEAD of training-job.yaml on a cluster that has GPU nodes with
+# the NVIDIA device plugin installed. It reuses data-pvc / checkpoints-pvc, so
+# apply k8s/training-job.yaml first if the PVCs do not exist yet, or split the
+# PVCs into their own file.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-classifier-gpu
+  namespace: ml-training
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: train-classifier
+    spec:
+      restartPolicy: Never
+      # Only schedule onto GPU nodes. Adjust the label to match your cluster
+      # (GKE uses cloud.google.com/gke-accelerator, EKS uses a custom label).
+      nodeSelector:
+        accelerator: nvidia
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: trainer
+          image: mlops-train:v1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TRAINING_CONFIG
+              value: /app/configs/training_config.yaml
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "2"
+              memory: 4Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: config
+              mountPath: /app/configs
+            - name: data
+              mountPath: /app/data
+            - name: checkpoints
+              mountPath: /app/checkpoints
+      volumes:
+        - name: config
+          configMap:
+            name: training-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-pvc
+        - name: checkpoints
+          persistentVolumeClaim:
+            claimName: checkpoints-pvc

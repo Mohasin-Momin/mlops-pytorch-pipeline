@@ -41,7 +41,7 @@ flowchart LR
 src/            model, dataset, training loop, FastAPI serving app
 configs/        training hyperparameters (YAML)
 docker/         multi-stage Dockerfiles for train and serve
-k8s/            namespace, configmap, job, deployment, service, hpa
+k8s/            namespace, configmap, job (+ gpu variant), deployment, service, hpa
 requirements/   pinned dependencies: train, serve, dev
 tests/          model shape/sanity tests
 docs/           end-to-end validation checklist and write-up
@@ -129,6 +129,12 @@ kubectl wait --for=condition=complete job/train-classifier -n ml-training --time
 The Job mounts the `training-config` ConfigMap at `/app/configs`, uses the `data-pvc` and
 `checkpoints-pvc` PersistentVolumeClaims, and sets CPU/memory requests and limits to
 2 cores / 4Gi.
+
+`k8s/training-job-gpu.yaml` is a GPU variant (Part D bonus): it adds `nvidia.com/gpu: 1`
+requests/limits, a `nodeSelector` and a GPU toleration. Apply it instead of `training-job.yaml`
+on a cluster with GPU nodes and the NVIDIA device plugin. `train.py` already moves to CUDA when
+available; for real GPU training swap `requirements/train.txt` to CUDA torch wheels (it currently
+pins CPU wheels to keep the image and CI small).
 
 Deploy serving once training has completed:
 
