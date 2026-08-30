@@ -118,3 +118,80 @@ executed against the real runtime, not just the code reviewed.
 - Docker serving: /health 200, /predict returned "<class>".
 - Kubernetes: Job completed / stopped after checkpoint; serving Deployment 2/2 ready;
   /predict via port-forward returned "<class>".
+
+## Kubernetes run output (kind)
+
+```
+$ kubectl get pods,deploy,svc,hpa,pvc -n ml-training   (+ kubectl describe deployment model-serving)
+NAME                                 READY   STATUS    RESTARTS   AGE
+pod/model-serving-649c98d9c7-5b74j   1/1     Running   0          61s
+pod/model-serving-649c98d9c7-kwdq7   1/1     Running   0          61s
+
+NAME                            READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/model-serving   2/2     2            2           61s
+
+NAME                    TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)   AGE
+service/model-serving   ClusterIP   10.96.64.28   <none>        80/TCP    60s
+
+NAME                                                REFERENCE                  TARGETS              MINPODS   MAXPODS   REPLICAS   AGE
+horizontalpodautoscaler.autoscaling/model-serving   Deployment/model-serving   cpu: <unknown>/70%   2         5         2          60s
+
+NAME                                    STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/checkpoints-pvc   Bound    pvc-d20b5210-2973-4859-983b-d93df8f63af5   2Gi        RWO            standard       <unset>                 112m
+persistentvolumeclaim/data-pvc          Bound    pvc-c6e38b10-89dd-4ccd-a8ec-51abc66af66e   5Gi        RWO            standard       <unset>                 112m
+
+Name:                   model-serving
+Namespace:              ml-training
+CreationTimestamp:      Sun, 30 Aug 2026 19:44:44 +0000
+Labels:                 app=model-serving
+Annotations:            deployment.kubernetes.io/revision: 1
+Selector:               app=model-serving
+Replicas:               2 desired | 2 updated | 2 total | 2 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  0 max unavailable, 1 max surge
+Pod Template:
+  Labels:  app=model-serving
+  Containers:
+   serve:
+    Image:      mlops-serve:v1
+    Port:       8080/TCP
+    Host Port:  0/TCP
+    Limits:
+      cpu:     1
+      memory:  2Gi
+    Requests:
+      cpu:        500m
+      memory:     1Gi
+    Liveness:     http-get http://:8080/health delay=0s timeout=1s period=10s #success=1 #failure=3
+    Readiness:    http-get http://:8080/health delay=15s timeout=1s period=5s #success=1 #failure=3
+    Environment:  <none>
+    Mounts:
+      /app/checkpoints from checkpoints (ro)
+  Volumes:
+   checkpoints:
+    Type:          PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:     checkpoints-pvc
+    ReadOnly:      true
+  Node-Selectors:  <none>
+  Tolerations:     <none>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    NewReplicaSetAvailable
+OldReplicaSets:  <none>
+NewReplicaSet:   model-serving-649c98d9c7 (2/2 replicas created)
+Events:
+  Type    Reason             Age   From                   Message
+  ----    ------             ----  ----                   -------
+
+
+$ kubectl port-forward svc/model-serving 8000:80 -n ml-training
+$ curl http://localhost:8000/health
+{"status":"ok"}
+$ curl -X POST http://localhost:8000/predict -F "image=@test_image.png"
+{"prediction":"truck","probabilities":{"airplane":0.0017,"automobile":0.0017,"ship":0.0001,"truck":0.9963}}
+```
+
+Note: HPA shows `cpu: <unknown>` briefly until metrics-server scrapes; the HPA object is created (min 2 / max 5).
