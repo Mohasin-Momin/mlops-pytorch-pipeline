@@ -12,6 +12,7 @@ data/
 checkpoints/
 *.pt
 *.pth
+test_image.png
 
 # Local env / secrets
 .env

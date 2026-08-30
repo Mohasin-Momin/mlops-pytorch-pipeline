@@ -41,7 +41,7 @@ flowchart LR
 src/            model, dataset, training loop, FastAPI serving app
 configs/        training hyperparameters (YAML)
 docker/         multi-stage Dockerfiles for train and serve
-k8s/            namespace, configmap, job, deployment, service, hpa
+k8s/            namespace, configmap, job (+ gpu variant), deployment, service, hpa
 requirements/   pinned dependencies: train, serve, dev
 tests/          model shape/sanity tests
 docs/           end-to-end validation checklist and write-up
@@ -80,17 +80,29 @@ PYTHONPATH=src pytest -q
 ## Docker
 
 ```bash
+mkdir -p data checkpoints
+
 # Training
 docker build -f docker/Dockerfile.train -t mlops-train:v1 .
-docker run --rm -v $(pwd)/data:/app/data -v $(pwd)/checkpoints:/app/checkpoints mlops-train:v1
+docker run --rm \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/checkpoints:/app/checkpoints" \
+  mlops-train:v1
 
-# Serving
+# Serving (host port 8000 -> container 8080)
 docker build -f docker/Dockerfile.serve -t mlops-serve:v1 .
-docker run --rm -p 8080:8080 -v $(pwd)/checkpoints:/app/checkpoints mlops-serve:v1
+docker run -d --name mlops-serve -p 8000:8080 \
+  -v "$(pwd)/checkpoints:/app/checkpoints" \
+  mlops-serve:v1
 
-curl http://localhost:8080/health
-curl -X POST http://localhost:8080/predict -F "image=@test_image.png"
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/predict -F "image=@test_image.png"
+docker rm -f mlops-serve
 ```
+
+Notes: quote the `-v` mounts (`$(pwd)` breaks on paths with spaces); the container serves on
+8080 but 8080 is taken by a Windows service on the dev machine, so the host port is 8000;
+`/health` returns 200 only once a checkpoint exists under `checkpoints/`, so run training first.
 
 The training and serving images have separate pinned requirements. The serving image uses a
 slim base, installs inference deps only, runs as a non-root user, exposes 8080 and has a
@@ -98,11 +110,12 @@ HEALTHCHECK. The checkpoint is mounted, not baked in.
 
 ## Kubernetes
 
-Load the locally built images into the cluster (minikube shown):
+Load the locally built images into the cluster (kind shown; `minikube image load` for minikube):
 
 ```bash
-minikube image load mlops-train:v1
-minikube image load mlops-serve:v1
+kind create cluster --name mlops
+kind load docker-image mlops-train:v1 --name mlops
+kind load docker-image mlops-serve:v1 --name mlops
 ```
 
 Run training as a Job:
@@ -119,6 +132,12 @@ The Job mounts the `training-config` ConfigMap at `/app/configs`, uses the `data
 `checkpoints-pvc` PersistentVolumeClaims, and sets CPU/memory requests and limits to
 2 cores / 4Gi.
 
+`k8s/training-job-gpu.yaml` is a GPU variant (Part D bonus): it adds `nvidia.com/gpu: 1`
+requests/limits, a `nodeSelector` and a GPU toleration. Apply it instead of `training-job.yaml`
+on a cluster with GPU nodes and the NVIDIA device plugin. `train.py` already moves to CUDA when
+available; for real GPU training swap `requirements/train.txt` to CUDA torch wheels (it currently
+pins CPU wheels to keep the image and CI small).
+
 Deploy serving once training has completed:
 
 ```bash
@@ -129,8 +148,8 @@ kubectl apply -f k8s/hpa.yaml
 kubectl get pods -n ml-training
 kubectl describe deployment model-serving -n ml-training
 
-kubectl port-forward svc/model-serving 8080:80 -n ml-training
-curl -X POST http://localhost:8080/predict -F "image=@test_image.png"
+kubectl port-forward svc/model-serving 8000:80 -n ml-training
+curl -X POST http://localhost:8000/predict -F "image=@test_image.png"
 ```
 
 The Deployment runs 2 replicas, mounts the checkpoint PVC read-only, has liveness (every 10s,
